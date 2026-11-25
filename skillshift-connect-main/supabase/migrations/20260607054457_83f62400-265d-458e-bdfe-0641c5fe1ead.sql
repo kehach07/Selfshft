@@ -1,0 +1,1 @@
+REVOKE EXECUTE ON FUNCTION public.mark_candidate_verified() FROM anon, authenticated, PUBLIC;
