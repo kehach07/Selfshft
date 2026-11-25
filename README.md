@@ -79,7 +79,7 @@ SelfShft is a youth-focused local gig marketplace, skill-monetization platform, 
 
 - **Theme Support**: Light and dark mode switching via `ThemeContext`, persisted in `localStorage` (`selfshft-theme`).
 - **Role-Aware Portals**: Separate responsive layouts (`CandidateLayout` and `CustomerLayout`) with desktop sidebars and mobile navigation menus.
-- **Hybrid Data Persistence & Realtime**: `AuthContext` combines `localStorage` session/data support with Supabase queries, mutations, and live `postgres_changes` subscriptions on `opportunities` and `opportunity_bookings`.
+- **Data Persistence & Realtime**: `AuthContext` manages Supabase Auth sessions, profile/opportunity queries and mutations, and live `postgres_changes` subscriptions on `opportunities` and `opportunity_bookings`.
 
 ---
 
@@ -90,7 +90,7 @@ SelfShft is a youth-focused local gig marketplace, skill-monetization platform, 
 - **Forms & Validation**: React Hook Form, `@hookform/resolvers`, Zod
 - **State & Data Fetching**: TanStack React Query (`@tanstack/react-query`), React Context (`AuthContext`, `ThemeContext`)
 - **Backend & Database**: Supabase (`@supabase/supabase-js` for Auth, PostgreSQL, RLS, and Realtime), Drizzle ORM / Drizzle Kit (`drizzle-orm`, `drizzle-kit`, `postgres`)
-- **OAuth Helper**: `@lovable.dev/cloud-auth-js` wrapped in `src/integrations/selfshft/index.ts`
+- **OAuth Helper**: Supabase Auth OAuth wrapped in `src/integrations/selfshft/index.ts`
 
 ---
 
