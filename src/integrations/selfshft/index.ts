@@ -1,8 +1,7 @@
-// SelfShft OAuth integration.
+// SelfShft OAuth integration via Supabase Auth.
 
-import { createLovableAuth as createCloudAuth } from "@lovable.dev/cloud-auth-js";
+import type { Provider } from "@supabase/supabase-js";
 import { supabase } from "../supabase/client";
-const selfshftAuth = createCloudAuth();
 
 type SignInOptions = {
   redirect_uri?: string;
@@ -11,28 +10,20 @@ type SignInOptions = {
 
 export const selfshft = {
   auth: {
-    signInWithOAuth: async (provider: "google" | "apple" | "microsoft", opts?: SignInOptions) => {
-      const result = await selfshftAuth.signInWithOAuth(provider, {
-        redirect_uri: opts?.redirect_uri,
-        extraParams: {
-          ...opts?.extraParams,
+    signInWithOAuth: async (provider: Provider, opts?: SignInOptions) => {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: {
+          redirectTo: opts?.redirect_uri,
+          queryParams: opts?.extraParams,
         },
       });
 
-      if (result.redirected) {
-        return result;
+      if (error) {
+        return { error, redirected: false };
       }
 
-      if (result.error) {
-        return result;
-      }
-
-      try {
-        await supabase.auth.setSession(result.tokens);
-      } catch (e) {
-        return { error: e instanceof Error ? e : new Error(String(e)) };
-      }
-      return result;
+      return { error: null, redirected: Boolean(data?.url) };
     },
   },
 };
