@@ -127,35 +127,51 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
 
 // ---------------------------------------------------------------------------
-// Local (temporary) auth layer
-// Stores users + sessions in localStorage so the user can sign up/login and
-// reach the profile pages without backend email verification.
+// Legacy local-storage cleanup
+// Clears any previously stored plaintext credentials/sessions from browsers.
 // ---------------------------------------------------------------------------
-const LOCAL_USERS_KEY = "selfshft_local_users";
-const LOCAL_SESSION_KEY = "selfshft_local_session";
-const LOCAL_CAND_PROFILES_KEY = "selfshft_local_candidate_profiles";
-const LOCAL_CUST_PROFILES_KEY = "selfshft_local_customer_profiles";
-const LOCAL_OPPS_KEY = "selfshft_local_opportunities";
+const LEGACY_LOCAL_KEYS = [
+  "selfshft_local_users",
+  "selfshft_local_session",
+  "selfshft_local_candidate_profiles",
+  "selfshft_local_customer_profiles",
+  "selfshft_local_opportunities",
+];
 
-type LocalUser = { id: string; email: string; password: string; role: "candidate" | "customer" };
-type LocalSession = { userId: string; email: string; role: "candidate" | "customer" };
-
-const readJson = <T,>(key: string, fallback: T): T => {
-  try { const raw = localStorage.getItem(key); return raw ? (JSON.parse(raw) as T) : fallback; } catch { return fallback; }
+const clearLegacyLocalAuth = () => {
+  try {
+    for (const key of LEGACY_LOCAL_KEYS) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    /* ignore storage access errors */
+  }
 };
-const writeJson = (key: string, value: unknown) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* noop */ } };
 
-const getLocalUsers = (): LocalUser[] => readJson<LocalUser[]>(LOCAL_USERS_KEY, []);
-const saveLocalUsers = (users: LocalUser[]) => writeJson(LOCAL_USERS_KEY, users);
-const getLocalSession = (): LocalSession | null => readJson<LocalSession | null>(LOCAL_SESSION_KEY, null);
-const setLocalSession = (s: LocalSession | null) => { if (s) writeJson(LOCAL_SESSION_KEY, s); else localStorage.removeItem(LOCAL_SESSION_KEY); };
-const getLocalCandidateProfiles = (): Record<string, CandidateProfile> => readJson(LOCAL_CAND_PROFILES_KEY, {});
-const saveLocalCandidateProfiles = (p: Record<string, CandidateProfile>) => writeJson(LOCAL_CAND_PROFILES_KEY, p);
-const getLocalCustomerProfiles = (): Record<string, CustomerProfile> => readJson(LOCAL_CUST_PROFILES_KEY, {});
-const saveLocalCustomerProfiles = (p: Record<string, CustomerProfile>) => writeJson(LOCAL_CUST_PROFILES_KEY, p);
-const getLocalOpportunities = (): Opportunity[] => readJson<Opportunity[]>(LOCAL_OPPS_KEY, []);
-const saveLocalOpportunities = (opps: Opportunity[]) => writeJson(LOCAL_OPPS_KEY, opps);
-const newId = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `id_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+const readPendingRole = (): "candidate" | "customer" | null => {
+  try {
+    const value = localStorage.getItem("selfshft_pending_role");
+    return value === "candidate" || value === "customer" ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+const writePendingRole = (role: "candidate" | "customer") => {
+  try {
+    localStorage.setItem("selfshft_pending_role", role);
+  } catch {
+    /* ignore storage access errors */
+  }
+};
+
+const clearPendingRole = () => {
+  try {
+    localStorage.removeItem("selfshft_pending_role");
+  } catch {
+    /* ignore storage access errors */
+  }
+};
 
 const defaultProfile: CandidateProfile = {
   id: "", firstName: "", lastName: "", email: "", phone: "", dob: "", bio: "", avatar: "",
@@ -284,19 +300,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(true);
 
   const refreshOpportunities = async () => {
-    const localOpps = getLocalOpportunities();
     const { data } = await supabase
       .from("opportunities")
       .select("*, customer_profiles(business_name, contact_person, phone), opportunity_bookings(id, created_at, status, message, application_note, candidate_profiles(first_name, last_name, email, phone, city, skills, resume_url))")
       .eq("status", "open")
       .order("created_at", { ascending: false });
-    const remote = (data || []).map(toOpportunity);
-    setOpportunities([...localOpps, ...remote]);
+    setOpportunities((data || []).map(toOpportunity));
   };
 
   const ensureRoleAndProfile = async (currentSession: Session, preferredRole?: "candidate" | "customer") => {
     const authUser = currentSession.user;
-    const roleFromStorage = (localStorage.getItem("selfshft_pending_role") as "candidate" | "customer" | null) || preferredRole;
+    const roleFromStorage = readPendingRole() || preferredRole;
     const { data: roles } = await supabase.from("user_roles").select("role").eq("user_id", authUser.id).limit(1);
     const role = (roles?.[0]?.role as "candidate" | "customer" | undefined) || roleFromStorage || "candidate";
 
@@ -306,7 +320,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
     setUserRole(role);
     setIsLoggedIn(true);
-    localStorage.removeItem("selfshft_pending_role");
+    clearPendingRole();
 
     if (role === "customer") {
       const { data: existing } = await supabase.from("customer_profiles").select("*").eq("user_id", authUser.id).maybeSingle();
@@ -335,21 +349,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   useEffect(() => {
-    // Hydrate from local (temporary) session first
-    const local = getLocalSession();
-    if (local) {
-      setUserRole(local.role);
-      setIsLoggedIn(true);
-      if (local.role === "candidate") {
-        const p = getLocalCandidateProfiles()[local.userId];
-        if (p) setProfile(p);
-      } else {
-        const p = getLocalCustomerProfiles()[local.userId];
-        if (p) setCustomerProfile(p);
-      }
-      refreshOpportunities().finally(() => setLoading(false));
-      return;
-    }
+    clearLegacyLocalAuth();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_, newSession) => {
       setSession(newSession);
@@ -388,79 +388,34 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const login = async (email: string, password: string, role: "candidate" | "customer") => {
-    // Local-first: check localStorage credentials
-    const users = getLocalUsers();
-    const match = users.find((u) => u.email.toLowerCase() === email.toLowerCase() && u.password === password && u.role === role);
-    if (match) {
-      const session: LocalSession = { userId: match.id, email: match.email, role: match.role };
-      setLocalSession(session);
-      setUserRole(match.role);
-      setIsLoggedIn(true);
-      if (match.role === "candidate") {
-        const p = getLocalCandidateProfiles()[match.id];
-        if (p) setProfile(p);
-        setCustomerProfile(null);
-      } else {
-        const p = getLocalCustomerProfiles()[match.id];
-        if (p) setCustomerProfile(p);
-        setProfile(null);
-      }
-      return true;
-    }
-
-    localStorage.setItem("selfshft_pending_role", role);
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    writePendingRole(role);
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     if (error || !data.session) return false;
+    setSession(data.session);
     await ensureRoleAndProfile(data.session, role);
     await refreshOpportunities();
     return true;
   };
 
   const signup = async (data: Partial<CandidateProfile>, password: string) => {
-    // Local-first temporary signup — no backend email verification required
     const email = (data.email || "").trim();
     if (!email || !password) return false;
-    const users = getLocalUsers();
-    if (users.some((u) => u.email.toLowerCase() === email.toLowerCase() && u.role === "candidate")) {
-      // Already exists — try local login
-      return login(email, password, "candidate");
-    }
-    const id = newId();
-    users.push({ id, email, password, role: "candidate" });
-    saveLocalUsers(users);
-    const candidateProfile: CandidateProfile = {
-      ...defaultProfile,
-      ...(data as CandidateProfile),
-      id,
-      email,
-      skills: data.skills || [],
-      portfolioItems: data.portfolioItems || [],
-    };
-    const all = getLocalCandidateProfiles();
-    all[id] = candidateProfile;
-    saveLocalCandidateProfiles(all);
-    setLocalSession({ userId: id, email, role: "candidate" });
-    setUserRole("candidate");
-    setIsLoggedIn(true);
-    setProfile(candidateProfile);
-    setCustomerProfile(null);
-    return true;
 
-    // eslint-disable-next-line no-unreachable
-    localStorage.setItem("selfshft_pending_role", "candidate");
+    writePendingRole("candidate");
     const { data: authData, error } = await supabase.auth.signUp({
-      email: data.email || "",
+      email,
       password,
       options: { emailRedirectTo: window.location.origin, data: { full_name: `${data.firstName || ""} ${data.lastName || ""}`.trim() } },
     });
     if (error) return false;
     if (authData.session) {
+      setSession(authData.session);
       await supabase.from("user_roles").insert({ user_id: authData.session.user.id, role: "candidate" });
       await supabase.from("candidate_profiles").insert({
         user_id: authData.session.user.id,
         first_name: data.firstName || "",
         last_name: data.lastName || "",
-        email: data.email || "",
+        email,
         phone: data.phone || "",
         dob: data.dob || null,
         bio: data.bio || "",
@@ -481,45 +436,22 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const customerSignup = async (data: Partial<CustomerProfile>, password: string) => {
     const email = (data.email || "").trim();
     if (!email || !password) return false;
-    const users = getLocalUsers();
-    if (users.some((u) => u.email.toLowerCase() === email.toLowerCase() && u.role === "customer")) {
-      return login(email, password, "customer");
-    }
-    const id = newId();
-    users.push({ id, email, password, role: "customer" });
-    saveLocalUsers(users);
-    const custProfile: CustomerProfile = {
-      ...defaultCustomerProfile,
-      ...(data as CustomerProfile),
-      id,
-      email,
-      hiringNeeds: data.hiringNeeds || [],
-    };
-    const all = getLocalCustomerProfiles();
-    all[id] = custProfile;
-    saveLocalCustomerProfiles(all);
-    setLocalSession({ userId: id, email, role: "customer" });
-    setUserRole("customer");
-    setIsLoggedIn(true);
-    setCustomerProfile(custProfile);
-    setProfile(null);
-    return true;
 
-    // eslint-disable-next-line no-unreachable
-    localStorage.setItem("selfshft_pending_role", "customer");
+    writePendingRole("customer");
     const { data: authData, error } = await supabase.auth.signUp({
-      email: data.email || "",
+      email,
       password,
       options: { emailRedirectTo: window.location.origin, data: { full_name: data.contactPerson || data.businessName || "" } },
     });
     if (error) return false;
     if (authData.session) {
+      setSession(authData.session);
       await supabase.from("user_roles").insert({ user_id: authData.session.user.id, role: "customer" });
       await supabase.from("customer_profiles").insert({
         user_id: authData.session.user.id,
         business_name: data.businessName || "",
         contact_person: data.contactPerson || "",
-        email: data.email || "",
+        email,
         phone: data.phone || "",
         business_type: data.businessType || "",
         industry: data.industry || "",
@@ -537,39 +469,37 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const signInWithGoogle = async (role: "candidate" | "customer") => {
-    localStorage.setItem("selfshft_pending_role", role);
+    writePendingRole(role);
     const result = await selfshft.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
     if (result.error) return false;
     if (result.redirected) return true;
     const { data } = await supabase.auth.getSession();
-    if (data.session) await ensureRoleAndProfile(data.session, role);
+    if (data.session) {
+      setSession(data.session);
+      await ensureRoleAndProfile(data.session, role);
+    }
     return true;
   };
 
   const sendPhoneOtp = async (phone: string, role: "candidate" | "customer") => {
-    localStorage.setItem("selfshft_pending_role", role);
+    writePendingRole(role);
     const { error } = await supabase.auth.signInWithOtp({ phone });
     return !error;
   };
 
   const verifyPhoneOtp = async (phone: string, token: string, role: "candidate" | "customer") => {
-    localStorage.setItem("selfshft_pending_role", role);
+    writePendingRole(role);
     const { data, error } = await supabase.auth.verifyOtp({ phone, token, type: "sms" });
     if (error || !data.session) return false;
+    setSession(data.session);
     await ensureRoleAndProfile(data.session, role);
     await refreshOpportunities();
     return true;
   };
 
   const logout = async () => {
-    if (getLocalSession()) {
-      setLocalSession(null);
-      setIsLoggedIn(false);
-      setUserRole(null);
-      setProfile(null);
-      setCustomerProfile(null);
-      return;
-    }
+    clearLegacyLocalAuth();
+    clearPendingRole();
     await supabase.auth.signOut();
     setSession(null);
     setIsLoggedIn(false);
@@ -579,15 +509,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const updateProfile = async (data: Partial<CandidateProfile>) => {
-    const local = getLocalSession();
-    if (local && local.role === "candidate" && profile) {
-      const merged: CandidateProfile = { ...profile, ...data };
-      const all = getLocalCandidateProfiles();
-      all[local.userId] = merged;
-      saveLocalCandidateProfiles(all);
-      setProfile(merged);
-      return;
-    }
     if (!profile || !session) return;
     const payload = {
       first_name: data.firstName ?? profile.firstName,
@@ -617,16 +538,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const updateCustomerProfile = async (data: Partial<CustomerProfile>) => {
-    const local = getLocalSession();
-    if (local && local.role === "customer" && customerProfile) {
-      const merged: CustomerProfile = { ...customerProfile, ...data };
-      const all = getLocalCustomerProfiles();
-      all[local.userId] = merged;
-      saveLocalCustomerProfiles(all);
-      setCustomerProfile(merged);
-      return;
-    }
-    if (!customerProfile) return;
+    if (!customerProfile || !session) return;
     const payload = {
       business_name: data.businessName ?? customerProfile.businessName,
       contact_person: data.contactPerson ?? customerProfile.contactPerson,
@@ -648,37 +560,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const addOpportunity = async (data: Partial<Opportunity>) => {
-    if (!customerProfile) return;
+    if (!customerProfile || !session) return;
     const category = canonicalCategory(data.category || data.role || customerProfile.industry);
-    const local = getLocalSession();
-    if (local && local.role === "customer") {
-      const newOpp: Opportunity = {
-        id: newId(),
-        customerId: customerProfile.id,
-        customerName: customerProfile.businessName || "Local customer",
-        contactPerson: customerProfile.contactPerson || "",
-        phone: customerProfile.phone || "",
-        category,
-        role: data.role || "Flexible Role",
-        description: data.description || "",
-        city: data.city || customerProfile.city || "",
-        address: data.address || customerProfile.address || "",
-        schedule: data.schedule || customerProfile.preferredSchedule || "",
-        budget: data.budget || customerProfile.budget || "",
-        duration: data.duration || "",
-        timing: data.timing || data.schedule || "",
-        payAmount: data.payAmount || data.budget || "",
-        payType: data.payType || "hour",
-        locationHunt: data.locationHunt || data.city || customerProfile.city || "",
-        openings: String(data.openings || 1),
-        immediateJoin: Boolean(data.immediateJoin),
-        applications: [],
-      };
-      const all = [newOpp, ...getLocalOpportunities()];
-      saveLocalOpportunities(all);
-      setOpportunities((prev) => [newOpp, ...prev.filter((o) => o.id !== newOpp.id)]);
-      return;
-    }
     await supabase.from("opportunities").insert({
       customer_id: customerProfile.id,
       category,
@@ -700,7 +583,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const bookOpportunity = async (opportunityId: string, applicationNote = "") => {
-    if (!profile) return false;
+    if (!profile || !session) return false;
     const { error } = await supabase.from("opportunity_bookings").insert({ opportunity_id: opportunityId, candidate_id: profile.id, application_note: applicationNote, message: applicationNote, status: "applied" });
     if (error) return false;
     await refreshOpportunities();
