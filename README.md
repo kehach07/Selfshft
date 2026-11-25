@@ -157,7 +157,11 @@ The Supabase PostgreSQL schema (`supabase/migrations/*` and `src/integrations/su
 
 ### Environment Variables
 
-Configure `.env` in the project root:
+Copy `.env.example` to `.env` in the project root and fill in your Supabase credentials:
+
+```sh
+cp .env.example .env
+```
 
 ```env
 VITE_SUPABASE_PROJECT_ID="your_supabase_project_id"
